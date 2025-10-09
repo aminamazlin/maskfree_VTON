@@ -1,0 +1,15 @@
+tqdm
+numpy
+Pillow
+torchvision
+torch
+scipy
+diffusers
+opencv-python
+pytorch_fid
+lpips 
+torchmetrics
+peft
+accelerate
+mlflow
+xformers
