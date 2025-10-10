@@ -150,6 +150,8 @@ def parse_args():
     parser.add_argument("--lora_alpha", type=int, default=16)
     parser.add_argument("--scale_lr", action="store_true")
     parser.add_argument("--local_rank", type=int, default=-1)
+    parser.add_argument("--mlflow_tracking_uri", type=str, default=None)
+    parser.add_argument("--mlflow_experiment", type=str, default=None, help="MLFlow experiment name")
     args = parser.parse_args()
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
     if env_local_rank != -1 and env_local_rank != args.local_rank:
@@ -244,6 +246,29 @@ def train():
 
     if args.seed is not None:
         set_seed(args.seed)
+
+    # Params not to log in mlflow
+    ignore_params = {
+        "logging_dir", "push_to_hub", "hub_token",
+        "hub_model_id", "mlflow_tracking_uri", "mlflow_experiment"
+    }
+
+    # Setup MLFlow
+    if accelerator.is_main_process:
+        if args.mlflow_tracking_uri:
+            # Connect to local mlflow server
+            mlflow.set_tracking_uri(args.mlflow_tracking_uri)
+        # Set experiment name
+        mlflow.set_experiment(args.mlflow_experiment)
+        mlflow.start_run()
+
+        # log params
+        params = {
+            k: (str(v) if not isinstance(v, (int, float, bool, str)) else v)
+            for k, v in vars(args).items()
+            if k not in ignore_params
+        }
+        mlflow.log_params(params)
 
 
     # Handle the repository creation
@@ -540,12 +565,22 @@ def train():
                         accelerator.save_state(save_path)
                         logger.info(f"Saved state to {save_path}")
 
+                        # Save intermediate lora 
+                        mlflow.log_artifacts(save_path, artifact_path=f"checkpoints/step_{global_step}")
+
             # Log loss & learning rate
             logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             # Show logs on tqdm bar
             progress_bar.set_postfix(**logs)
             # Sent logs to mlflow/tensorboard
             accelerator.log(logs, step=global_step)
+
+            # Log metrics in mlflow
+            if accelerator.is_main_process:
+                mlflow.log_metrics(
+                    {"loss": float(logs["loss"]), "lr": lr_scheduler.get_last_lr()[0]},
+                    step=global_step
+                )
 
             if global_step >= args.max_train_steps:
                 break
@@ -559,6 +594,9 @@ def train():
         # PEFT: save adapter weights
         unet.save_pretrained(args.output_dir)
 
+        # Save lora
+        mlflow.log_artifacts(args.output_dir, artifact_path="final_lora")
+
         if args.push_to_hub:
             upload_folder(
                 repo_id=repo_id,
@@ -567,6 +605,8 @@ def train():
                 ignore_patterns=["step_*", "epoch_*"],
             )
 
+        mlflow.end_run()
+        
     accelerator.end_training()
 
 
