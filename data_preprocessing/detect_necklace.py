@@ -39,7 +39,7 @@ model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
 # default processer
 processor = AutoProcessor.from_pretrained("Qwen/Qwen2-VL-7B-Instruct")
 
-if _name_ == '_main_':
+if __name__ == '_main_':
     json_file = "infer_necklace_objects.json"
 
     # Load existing data or create empty dict if file doesn't exist or is empty
