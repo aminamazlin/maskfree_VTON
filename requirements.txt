@@ -13,3 +13,5 @@ peft
 accelerate
 mlflow
 xformers
+modelscope
+qwen-vl-utils
