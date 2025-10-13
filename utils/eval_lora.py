@@ -11,16 +11,49 @@ import os
 import mlflow
 
 
-def _iterate_items(eval_data: Union[List, Dict]):
-    for entry in eval_data:
-        if not isinstance(entry, dict) or len(entry) != 1:
-            raise ValueError(f"Unexpected entry format: {entry}")
+# def _iterate_items(eval_data: Union[List, Dict]):
+#     for entry in eval_data:
+#         if not isinstance(entry, dict) or len(entry) != 1:
+#             raise ValueError(f"Unexpected entry format: {entry}")
         
-        garment_class = list(entry.keys())[0]             # "full_body"
-        item = dict(entry[garment_class])                 # get the inner dict safely
-        item.setdefault("class_name", garment_class)      # ensure there's a class name key
+#         garment_class = list(entry.keys())[0]             # "full_body"
+#         item = dict(entry[garment_class])                 # get the inner dict safely
+#         item.setdefault("class_name", garment_class)      # ensure there's a class name key
 
-        yield garment_class, item
+#         yield garment_class, item
+
+def _iterate_items(eval_data: dict):
+    """
+    Yields (class_name, node) where:
+      class_name -> full_body, lower_body, upper_body, outerwear
+      node       -> dict with keys: "person", "object", "tryon_prompt" 
+    Skips empty/invalid entries gracefully.
+    """
+    for garment_class, items_list in eval_data.items():
+        if not isinstance(items_list, list):
+            print(f"[WARN] Skipping non-list items for {garment_class}: {items_list}")
+            continue
+            
+        for node in items_list:
+            if not isinstance(node, dict):
+                print(f"[WARN] Skipping non-dict node for {garment_class}: {node}")
+                continue
+            
+            person = node.get("person", {})
+            obj = node.get("object", {})
+
+            if not person or not obj:
+                print(f"[WARN] Missing 'person' or 'object' for class '{garment_class}'")
+                continue
+            
+            required_person = ["input_tryon_img_path"]
+
+            if any(k not in person or not person[k] for k in required_person):
+                print(f"[WARN] Incomplete 'person' fields for '{garment_class}'")
+                continue
+
+            yield garment_class, node
+
 
 def get_local_artifact_dir(artifact_subdir: str = ""):
     """
@@ -60,14 +93,16 @@ def evaluate_lora(
     pipe.load_lora_weights(lora_dir)
 
     for garment_class, item in tqdm(list(_iterate_items(eval_data)), desc="Generating stage 1 try-on images"):
+        person = item["person"]
         # Get artifact dir
         tryon_root = get_local_artifact_dir(f"{artifact_root_dir}/{tryon_subdir}")
 
         # Load prompt
-        prompt = item["tryon_prompt"]
+        # prompt = person["tryon_prompt"]
+        prompt = "replacing the dress"
 
         # Load traceless erased image
-        tryon_in_path = item["input_tryon_img_path"]
+        tryon_in_path = person["input_tryon_img_path"]
         input_img = Image.open(tryon_in_path ).convert("RGB")
 
         # Get base name
@@ -93,7 +128,7 @@ def evaluate_lora(
         out.save(out_path)
 
         # Update JSON with absolute path that metric code can open directly
-        item["output_tryon_img_path"] = str(out_path)
+        person["output_tryon_img_path"] = str(out_path)
         
     # Write updated JSON into artifacts
     json_dir = get_local_artifact_dir(artifact_root_dir)
