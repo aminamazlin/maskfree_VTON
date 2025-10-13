@@ -13,7 +13,7 @@ from huggingface_hub import create_repo, upload_folder
 from PIL import Image
 from torch.utils.data import Dataset
 from torchvision import transforms
-from tqdm.auto import tqdm
+from tqdm import tqdm
 from transformers import CLIPTextModel, CLIPTokenizer ,CLIPTextModelWithProjection
 
 from diffusers import AutoencoderKL, DDPMScheduler, UNet2DConditionModel
@@ -21,7 +21,8 @@ from diffusers.optimization import get_scheduler
 from diffusers.utils import check_min_version
 from diffusers.utils.import_utils import is_xformers_available
 from peft import LoraConfig, get_peft_model
-
+from utils.eval_metrics_stage1 import compute_metrics_stage1
+from utils.eval_lora import evaluate_lora
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.13.0.dev0")
@@ -159,6 +160,23 @@ def parse_args():
     return args
 
 
+def resize_to_max_pixels(img: Image.Image, max_pixels: int = 1_000_000) -> Image.Image:
+    """Resize image to have ≤ max_pixels while preserving aspect ratio."""
+    w, h = img.size
+    cur = w * h
+    if cur <= max_pixels:
+        return img  # already small enough
+
+    # compute resize scale
+    scale = math.sqrt(max_pixels / float(cur))
+    new_w = max(1, int(round(w * scale)))
+    new_h = max(1, int(round(h * scale)))
+
+    return img.resize((new_w, new_h), Image.BICUBIC)
+
+from torch.utils.data import Dataset
+from torchvision import transforms
+import torch
 
 class MaskFreeDataset(Dataset):
     """
@@ -167,40 +185,27 @@ class MaskFreeDataset(Dataset):
       - cond_tensor:    I_c  (normalized to [-1,1])
       - prompt:         short object phrase
     """
-    def __init__(self, height: int, width: int, target_dir, cond_dir, captions_json=None, center_crop=False):
+    def __init__(self, target_dir, cond_dir):
         self.target_dir = Path(target_dir)
         self.cond_dir   = Path(cond_dir)
-        self.height, self.width = height, width
-        self.center_crop = center_crop
 
         # file list from target_dir
         self.files = sorted([p.name for p in self.target_dir.iterdir()
                              if p.suffix.lower() in {".jpg",".jpeg",".png"}])
         
-        self.prompts = {}
-        if captions_json and os.path.exists(captions_json):
-            with open(captions_json, "r", encoding="utf-8") as file:
-                for line in file:
-                    j = json.loads(line)
-                    self.prompts[j["file"]] = j["prompt"]
-
-
-        resize = transforms.Resize((self.height, self.width), interpolation=transforms.InterpolationMode.BICUBIC)
-        crop   = transforms.CenterCrop((self.height, self.width)) if center_crop else transforms.RandomCrop((self.height, self.width))
-        self.preprocess = transforms.Compose([
-            #crop,
-            # transforms.Resize(
-            #     (self.height, self.width), 
-            #     interpolation=transforms.InterpolationMode.BICUBIC
-            # ),
+        self.transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize([0.5,0.5,0.5],[0.5,0.5,0.5])  # -> [-1,1]
         ])
 
-
     def _open_rgb(self, path: Path):
         img = Image.open(path)
         return img.convert("RGB") if img.mode != 'RGB' else img
+    
+    def _prep(self, img: Image.Image) -> torch.Tensor:
+        img = resize_to_max_pixels(img, max_pixels=1_000_000)
+        # convert to tensor and normalize
+        return self.transorm(img)
     
     # Returns the number of samples
     def __len__(self):
@@ -215,10 +220,11 @@ class MaskFreeDataset(Dataset):
             raise FileNotFoundError(f"Missing cond image for {name}: {cond_path}")
         
         # load & preprocess
-        target_tensor = self.preprocess(self._open_rgb(target_path))
-        cond_tensor   = self.preprocess(self._open_rgb(cond_path))
+        target_tensor = self.transform(self._open_rgb(target_path))
+        cond_tensor   = self.transform(self._open_rgb(cond_path))
 
-        prompt = self.prompts.get(name, "")
+        # prompt = self.prompts.get(name, "")
+        prompt = "replacing the dress"
 
         return {
             "target_tensor": target_tensor,
@@ -227,7 +233,8 @@ class MaskFreeDataset(Dataset):
             "H": target_tensor.shape[-2],
             "W": target_tensor.shape[-1],
         }
-    
+
+
 
 def train():
     args = parse_args()
@@ -605,6 +612,30 @@ def train():
                 ignore_patterns=["step_*", "epoch_*"],
             )
 
+        if accelerator.is_main_process:
+            # Evaluate: after training generate images with the lora and log them in mlflow
+            updated_json_path = evaluate_lora(
+                base_model_id_or_path=args.pretrained_model_name_or_path,
+                lora_dir=args.output_dir,
+                eval_json="",
+                artifact_root="stage1_eval",
+                tryon_subdir="tryon",
+                device=accelerator.device,
+                num_inference_steps=30,
+                guidance_scale=30
+            )
+
+            # Compute metrics with evaluation results
+            g_accuracy, clip_t = compute_metrics_stage1(
+                eval_file=updated_json_path,
+                artifact_root="stage1_eval",
+                retry_threshold=0.1
+            ) 
+            # Log evaluation metrics
+            mlflow.log_metrics(
+                {"g-accuracy": g_accuracy, "clip-t similarity": clip_t}
+            )
+
         mlflow.end_run()
         
     accelerator.end_training()
@@ -612,3 +643,5 @@ def train():
 
 if __name__ == "__main__":
     train()
+
+  
