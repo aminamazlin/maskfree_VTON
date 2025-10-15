@@ -205,7 +205,7 @@ class MaskFreeDataset(Dataset):
     def _prep(self, img: Image.Image) -> torch.Tensor:
         img = resize_to_max_pixels(img, max_pixels=1_000_000)
         # convert to tensor and normalize
-        return self.transorm(img)
+        return self.transform(img)
     
     # Returns the number of samples
     def __len__(self):
@@ -262,11 +262,20 @@ def train():
 
     # Setup MLFlow
     if accelerator.is_main_process:
-        if args.mlflow_tracking_uri:
-            # Connect to local mlflow server
-            mlflow.set_tracking_uri(args.mlflow_tracking_uri)
-        # Set experiment name
-        mlflow.set_experiment(args.mlflow_experiment)
+        # Normalize CLI args: treat "null"/"None"/"" as unset
+        def _norm(v):
+            if v is None:
+                return None
+            s = str(v).strip()
+            return None if s.lower() in {"", "none", "null"} else s
+
+        mlflow_tracking_uri = _norm(args.mlflow_tracking_uri) or os.environ.get("MLFLOW_TRACKING_URI")
+        mlflow_experiment = _norm(args.mlflow_experiment) or os.environ.get("MLFLOW_EXPERIMENT_NAME")
+
+        if mlflow_tracking_uri:
+            mlflow.set_tracking_uri(mlflow_tracking_uri)
+        if mlflow_experiment:
+            mlflow.set_experiment(mlflow_experiment)
         mlflow.start_run()
 
         # log params
@@ -360,7 +369,7 @@ def train():
     optimizer_class = torch.optim.AdamW
     if args.use_8bit_adam:
         try:
-            import bitsandbytes as bnb
+            import bitsandbytes as bnb  # type: ignore[import-not-found]
             optimizer_class = bnb.optim.AdamW8bit
         except ImportError:
             raise ImportError(
@@ -382,12 +391,8 @@ def train():
     # Dataset & loader
     H, W = args.height, args.width
     train_dataset = MaskFreeDataset(
-        cond_dir=args.cond_data_dir,        # traceless erased tryon image
-        target_dir=args.target_data_dir,    # original tryon
-        captions_json=args.captions_file,   # instruct prompts
-        height=H,
-        width=W,
-        center_crop=args.center_crop,
+        target_dir=args.target_data_dir,
+        cond_dir=args.cond_data_dir,
     )
     # returns samples per step based on batch
     train_dataloader = torch.utils.data.DataLoader(
