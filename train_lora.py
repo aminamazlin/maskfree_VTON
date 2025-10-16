@@ -21,8 +21,8 @@ from diffusers.optimization import get_scheduler
 from diffusers.utils import check_min_version
 from diffusers.utils.import_utils import is_xformers_available
 from peft import LoraConfig, get_peft_model
-from utils.eval_metrics_stage1 import compute_metrics_stage1
-from utils.eval_lora import evaluate_lora
+from evaluation.eval_metrics_stage1 import compute_metrics_stage1
+from evaluation.eval_lora import evaluate_lora
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.13.0.dev0")

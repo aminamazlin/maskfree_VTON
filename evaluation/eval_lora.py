@@ -11,16 +11,6 @@ import os
 import mlflow
 
 
-# def _iterate_items(eval_data: Union[List, Dict]):
-#     for entry in eval_data:
-#         if not isinstance(entry, dict) or len(entry) != 1:
-#             raise ValueError(f"Unexpected entry format: {entry}")
-        
-#         garment_class = list(entry.keys())[0]             # "full_body"
-#         item = dict(entry[garment_class])                 # get the inner dict safely
-#         item.setdefault("class_name", garment_class)      # ensure there's a class name key
-
-#         yield garment_class, item
 
 def _iterate_items(eval_data: dict):
     """

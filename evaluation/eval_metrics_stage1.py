@@ -13,6 +13,7 @@ import tqdm
 import os
 import logging
 import mlflow
+from pathlib import Path
 
 # Create a basic logger
 logger = logging.getLogger()
@@ -21,13 +22,18 @@ logging.basicConfig(format="%(levelname)s: %(message)s")
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+# Resolve third-party vendored modules - works both locally and in Docker
+_THIS_DIR = Path(__file__).resolve().parent
+_WORKSPACE_ROOT = _THIS_DIR.parent  # Go up from evaluation/ to workspace root
+_GSA_DIR = _WORKSPACE_ROOT / "utils" / "Grounded-Segment-Anything"
+
 # GroundingDINO config and checkpoint
-GROUNDING_DINO_CONFIG_PATH = "Grounded-Segment-Anything/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py"
-GROUNDING_DINO_CHECKPOINT_PATH = "Grounded-Segment-Anything/checkpoints/groundingdino_swint_ogc.pth"
+GROUNDING_DINO_CONFIG_PATH = str(_GSA_DIR / "GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py")
+GROUNDING_DINO_CHECKPOINT_PATH = str(_GSA_DIR / "checkpoints/groundingdino_swint_ogc.pth")
 
 # Segment-Anything checkpoint
 SAM_ENCODER_VERSION = "vit_h"
-SAM_CHECKPOINT_PATH = "Grounded-Segment-Anything/checkpoints/sam_vit_h_4b8939.pth"
+SAM_CHECKPOINT_PATH = str(_GSA_DIR / "checkpoints/sam_vit_h_4b8939.pth")
 
 # CLIP checkpoint
 CLIP_CHECKPOINT = "openai/clip-vit-base-patch32"
@@ -222,7 +228,7 @@ def compute_g_accuracy(
                 if mask.eq(0).all():
                     print("Still no mask after retry with box_threshold=0.1")
                     tryon_img = Image.open(tryon_img_path).convert("RGB")
-                    tryon_img = T.ToTensor(tryon_img)
+                    tryon_img = T.ToTensor()(tryon_img)
                     mask = torch.zeros_like(tryon_img)
 
                     total += 1
