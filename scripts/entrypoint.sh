@@ -1,73 +1,82 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Simple entrypoint to optionally start an MLflow server and then run training.
-# Usage examples:
-#   docker run ... image scripts/entrypoint.sh --train-args "--cond_data_dir /data/cond --target_data_dir /data/target"
-# Environment variables:
-#   START_MLFLOW_SERVER (default: 0) -> if 1, launches local mlflow server
-#   MLFLOW_HOST (default: 0.0.0.0)
-#   MLFLOW_PORT (default: 5000)
-#   MLFLOW_BACKEND_STORE (default: /workspace/mlruns)
-#   MLFLOW_ARTIFACT_ROOT (default: /workspace/artifacts)
-#   MLFLOW_EXPERIMENT_NAME (default: maskfree_vton)
-#   MLFLOW_TRACKING_URI (auto-set if server started locally)
-#   TRAIN_SCRIPT (default: train_lora.py)
-#   EXTRA_PIP (optional) -> space-separated extra packages to install prior to run
-#   PYTHONUNBUFFERED=1 ensures logs flush
+# Container entrypoint - starts SSH server and keeps container running
+# For services (MLflow, checkpoints): run /app/scripts/start_services.sh
+# For training: run /app/scripts/train_lora.sh
 
-START_MLFLOW_SERVER=${START_MLFLOW_SERVER:-0}
-MLFLOW_HOST=${MLFLOW_HOST:-0.0.0.0}
-MLFLOW_PORT=${MLFLOW_PORT:-5000}
-MLFLOW_BACKEND_STORE=${MLFLOW_BACKEND_STORE:-/workspace/mlruns}
-MLFLOW_ARTIFACT_ROOT=${MLFLOW_ARTIFACT_ROOT:-/workspace/artifacts}
-MLFLOW_EXPERIMENT_NAME=${MLFLOW_EXPERIMENT_NAME:-maskfree_vton}
-TRAIN_SCRIPT=${TRAIN_SCRIPT:-train_lora.py}
+echo "[entrypoint] Initializing container..."
+
+# ---------- MAKE CODE PERSISTENT ----------
+APP_SRC=/app
+APP_RW=/workspace/app
+
+# On first boot, copy the baked /app into the persistent /workspace/app
+if [ ! -d "$APP_RW" ] || [ -z "$(ls -A "$APP_RW" 2>/dev/null)" ]; then
+  echo "[entrypoint] Seeding $APP_RW from $APP_SRC"
+  mkdir -p "$APP_RW"
+  cp -a "$APP_SRC"/. "$APP_RW"/
+fi
+
+# Prefer the persistent copy for all runtime work
+export PYTHONPATH="$APP_RW:$PYTHONPATH"
+cd "$APP_RW"
+
+# ---------- SSH SERVER ----------
+SSH_USER="${SSH_USER:-trainer}"
+
+# Allow injecting a public key at runtime (set AUTHORIZED_KEY env in RunPod template)
+if [[ -n "${AUTHORIZED_KEY:-}" ]]; then
+  echo "[entrypoint] Configuring SSH key for user: $SSH_USER"
+  mkdir -p "/home/$SSH_USER/.ssh"
+  printf '%s\n' "$AUTHORIZED_KEY" >> "/home/$SSH_USER/.ssh/authorized_keys"
+  chown -R "$SSH_USER:$SSH_USER" "/home/$SSH_USER/.ssh"
+  chmod 700 "/home/$SSH_USER/.ssh"
+  chmod 600 "/home/$SSH_USER/.ssh/authorized_keys"
+fi
+
+# Generate host keys if missing and start sshd
+echo "[entrypoint] Starting SSH server..."
+if command -v ssh-keygen >/dev/null 2>&1; then 
+  ssh-keygen -A || true
+fi
+service ssh start >/dev/null 2>&1 || /usr/sbin/sshd || true
+
+# ---------- OPTIONAL EXTRA PACKAGES ----------
 EXTRA_PIP=${EXTRA_PIP:-}
-USE_ACCELERATE=${USE_ACCELERATE:-0}
-
-# Install extra python packages if provided with EXTRA_PIP
 if [ -n "$EXTRA_PIP" ]; then
   echo "[entrypoint] Installing extra pip packages: $EXTRA_PIP"
   pip install --no-cache-dir $EXTRA_PIP
 fi
 
-# Optional: start MLflow locally and tell the training script how to find it
-if [ "$START_MLFLOW_SERVER" = "1" ]; then
-  echo "[entrypoint] Starting MLflow server on $MLFLOW_HOST:$MLFLOW_PORT"
-  mkdir -p "$MLFLOW_BACKEND_STORE" "$MLFLOW_ARTIFACT_ROOT"
-  mlflow server \
-    --host "$MLFLOW_HOST" \
-    --port "$MLFLOW_PORT" \
-    --backend-store-uri "sqlite:///$MLFLOW_BACKEND_STORE/mlflow.db" \
-    --default-artifact-root "$MLFLOW_ARTIFACT_ROOT" &
-  MLFLOW_PID=$!
-  export MLFLOW_TRACKING_URI="http://$MLFLOW_HOST:$MLFLOW_PORT"
-  echo "[entrypoint] MLflow server PID $MLFLOW_PID; tracking URI $MLFLOW_TRACKING_URI"
-  # Give MLflow a moment to come up
-  sleep 3
-fi
+# ---------- AUTO-START SERVICES ----------
+echo "[entrypoint] Starting services (MLflow + checkpoints)..."
+/app/scripts/start_services.sh &
+sleep 3
 
-# Always export the experiment name so Python can pick it up as a fallback
-export MLFLOW_EXPERIMENT_NAME
+# ---------- HANDLE COMMAND ----------
+echo "[entrypoint] Container ready!"
+echo ""
+echo "================================================"
+echo "  SSH Server: Running (port 22)"
+echo "  MLflow:     Running (port 5000)"
+echo "================================================"
+echo ""
+echo "Available commands:"
+echo "  - Start training:  /app/scripts/train_lora.sh"
+echo "  - Manual training: accelerate launch train_lora.py [args]"
+echo ""
+echo "Services already running:"
+echo "  ✓ SSH Server (port 22)"
+echo "  ✓ MLflow (http://localhost:5000)"
+echo ""
 
-# If first arg is -- just, ignore it
-if [ "${1:-}" = "--" ]; then shift; fi
-
-# Collect training arguments
-TRAIN_ARGS="$@"
-
-# Run training
-if [ "$USE_ACCELERATE" = "1" ]; then
-  echo "[entrypoint] Using accelerate launch for: $TRAIN_SCRIPT $TRAIN_ARGS"
-  accelerate launch "$TRAIN_SCRIPT" $TRAIN_ARGS
+# If arguments provided, execute them (allows running custom commands)
+if [ $# -gt 0 ]; then
+  echo "[entrypoint] Executing: $@"
+  exec "$@"
 else
-  echo "[entrypoint] Running training script: $TRAIN_SCRIPT $TRAIN_ARGS"
-  python "$TRAIN_SCRIPT" $TRAIN_ARGS
-fi
-
-# Stop mlflow server
-if [ "$START_MLFLOW_SERVER" = "1" ]; then
-  echo "[entrypoint] Training finished; stopping MLflow server (PID $MLFLOW_PID)"
-  kill $MLFLOW_PID || true
+  # Keep container running
+  echo "[entrypoint] Container running. Connect via SSH or docker exec."
+  tail -f /dev/null
 fi
