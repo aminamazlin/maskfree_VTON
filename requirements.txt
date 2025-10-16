@@ -1,17 +1,20 @@
-tqdm
-numpy
-Pillow
-torchvision
-torch
-scipy
+# Core ML packages
 diffusers
-opencv-python
+peft
+accelerate
+xformers==0.0.22.post7
+
+# Metrics & evaluation
 pytorch_fid
 lpips 
 torchmetrics
-peft
-accelerate
+
+# MLflow for experiment tracking
 mlflow
-xformers
+
+# Model & utils
 modelscope
 qwen-vl-utils
+opencv-python
+
+# Note: numpy, Pillow, scipy, tqdm are already in base image or installed as dependencies

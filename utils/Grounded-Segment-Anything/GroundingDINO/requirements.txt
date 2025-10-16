@@ -1,0 +1,7 @@
+# Note: torch, torchvision, numpy already in base image
+transformers
+addict
+yapf
+timm
+supervision
+pycocotools
