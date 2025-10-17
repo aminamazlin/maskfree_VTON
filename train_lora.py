@@ -15,6 +15,8 @@ from torch.utils.data import Dataset
 from torchvision import transforms
 from tqdm import tqdm
 from transformers import CLIPTextModel, CLIPTokenizer ,CLIPTextModelWithProjection
+import time
+from collections import deque
 
 from diffusers import AutoencoderKL, DDPMScheduler, UNet2DConditionModel
 from diffusers.optimization import get_scheduler
@@ -235,6 +237,15 @@ class MaskFreeDataset(Dataset):
         }
 
 
+def _sync_if_cuda():
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+
+def _format_seconds(s):
+    m, s = divmod(int(s), 60)
+    h, m = divmod(m, 60)
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
 
 def train():
     args = parse_args()
@@ -432,6 +443,17 @@ def train():
     if accelerator.is_main_process:
         accelerator.init_trackers("sdxl-inpaint-lora", config=vars(args))
 
+    # Timing setup 
+    start_time = time.perf_counter()
+    accum_start = None
+    step_times = deque(maxlen=100)
+
+    effective_batch_per_step = (
+        args.train_batch_size
+        * accelerator.num_processes
+        * args.gradient_accumulation_steps
+    )
+
     # Train
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
 
@@ -493,6 +515,10 @@ def train():
                 if step % args.gradient_accumulation_steps == 0:
                     progress_bar.update(1)
                 continue
+            
+            # Start timing at first accumulation step
+            if step % args.gradient_accumulation_steps:
+                accum_start = time.perf_counter()
 
             # Handle gradiënt accumulation automatically
             with accelerator.accumulate(unet):
@@ -570,6 +596,23 @@ def train():
                 progress_bar.update(1)
                 global_step += 1
 
+                _sync_if_cuda()
+                if accum_start is not None:
+                    # Duration of one training step
+                    step_duration = time.perf_counter() - accum_start
+                    step_times.append(step_duration)
+                    # Compute avg step time
+                    avg_step = sum(step_times) / len(step_times)
+
+                    # Compute throughput: # images processed per sec
+                    throughput = effective_batch_per_step / avg_step 
+                    remaining_steps = args.max_train_steps - global_step
+                    # Remaining training time
+                    eta_sec = remaining_steps * avg_step
+                    # Training time elapsed
+                    train_time_elapsed = time.perf_counter() - start_time
+
+
                 # Save Checkpoint every args.checkpointing_steps 
                 if global_step % args.checkpointing_steps == 0:
                     if accelerator.is_main_process:
@@ -580,8 +623,14 @@ def train():
                         # Save intermediate lora 
                         mlflow.log_artifacts(save_path, artifact_path=f"checkpoints/step_{global_step}")
 
-            # Log loss & learning rate
-            logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+            # Log loss, learning rate, step/sec, image/sec, estimated time of arrival
+            logs = {
+                "loss": loss.detach().item(), 
+                "lr": lr_scheduler.get_last_lr()[0],
+                "step_s": f"{avg_step:.3f}",
+                "img_s":f"{throughput:.1f}",
+                "eta": f"{_format_seconds(eta_sec)}"
+            }
             # Show logs on tqdm bar
             progress_bar.set_postfix(**logs)
             # Sent logs to mlflow/tensorboard
@@ -589,10 +638,18 @@ def train():
 
             # Log metrics in mlflow
             if accelerator.is_main_process:
-                mlflow.log_metrics(
-                    {"loss": float(logs["loss"]), "lr": lr_scheduler.get_last_lr()[0]},
-                    step=global_step
-                )
+               mlflow.log_metrics(
+                    {
+                        "loss": float(logs["loss"]),
+                        "lr": lr_scheduler.get_last_lr()[0],
+                        "step_time_s_avg": float(avg_step),
+                        "throughput_img_per_s": float(throughput),
+                        "eta_s": float(eta_sec),
+                        "wall_s": float(train_time_elapsed),
+                    },
+                    step=global_step,
+               )
+
 
             if global_step >= args.max_train_steps:
                 break
@@ -642,8 +699,16 @@ def train():
             )
 
         mlflow.end_run()
-        
-    accelerator.end_training()
+    if accelerator.is_main_process:
+        total_train_time = time.perf_counter() - train_time_elapsed
+        logger.info(f"Total training time: {_format_seconds(total_train_time)}")
+        mlflow.log_metrics({
+            "total_training_time_s": float(total_train_time),
+            "total_training_time_formatted": _format_seconds(total_train_time)
+        })
+
+
+        accelerator.end_training()
 
 
 if __name__ == "__main__":
