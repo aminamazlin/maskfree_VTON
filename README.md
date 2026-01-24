@@ -8,4 +8,4 @@ Key contributions include:
 - **Garment Transfer Mechanism:** Redesigned the garment transfer attention mechanism to operate without rotary embeddings and to work with Unet feature maps.
 - **Data Augmentation:** Applied techniques from **BooW-VTON (Li et al., 2024)** to enhance in-the-wild robustness and generalization by compositing person images onto diverse backgrounds after removing the original background.
 - Includes attention visualization.
-- Includes the training script to train the localization & identiy LoRa and tracks training progress using MLFlow
+- Includes evaluation script and the training script to train the localization & identiy LoRa and tracks training progress using MLFlow
