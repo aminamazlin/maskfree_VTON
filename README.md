@@ -1,6 +1,6 @@
 # maskfree_VTON
 
-This project re-implements [OmniTry (Zhou et al., 2023)](https://arxiv.org/abs/2308.13632) with a U-Net-based diffusion backbone and integrates techniques from [BooW-VTON (Author et al., 2022)](https://arxiv.org/abs/2308.06047) to improve in-the-wild performance.
+This project re-implements [OmniTry (Zhou et al., 2023)](https://arxiv.org/abs/2508.13632) with a U-Net-based diffusion backbone and integrates techniques from [BooW-VTON (Author et al., 2022)](https://arxiv.org/abs/2408.06047) to improve in-the-wild performance.
 
 
 Key contributions include:
