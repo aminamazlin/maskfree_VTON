@@ -6,4 +6,4 @@ This project re-implements [OmniTry (Zhou et al., 2023)](https://arxiv.org/abs/2
 Key contributions include:
 - **Backbone Redesign:** Replaced the diffusion transformer backbone with a U-Net–based diffusion architecture
 - **Garment Transfer Mechanism:** Redesigned the garment transfer attention mechanism to operate without rotary embeddings and to work with Unet feature maps.
-- Includes the training script to train the localization & identiy LoRa and tracks training progress with MLFlow
+- Includes the training script to train the localization & identiy LoRa and tracks training progress using MLFlow
